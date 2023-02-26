@@ -3,10 +3,11 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ant {
-    color: Color,
-    direction: Direction,
-    position: Position,
-    instr_pointer: InstrIdx,
+    pub color: Color,
+    pub direction: Direction,
+    pub position: Position,
+    pub instr_pointer: InstrIdx,
+    pub carries_food: bool,
 }
 
 impl Ant {
@@ -16,6 +17,7 @@ impl Ant {
             position,
             direction: Direction::default(),
             instr_pointer: 0,
+            carries_food: false,
         }
     }
 }
@@ -39,6 +41,7 @@ impl Default for Cell {
 pub enum CellError {
     Occupied,
     Wall,
+    NoFood,
 }
 
 impl Cell {
@@ -83,10 +86,60 @@ impl Cell {
     pub fn has_ant(&self) -> bool {
         self.ant().is_some()
     }
+
+    pub fn food(&self) -> u32 {
+        match self {
+            Cell::FreeCell { food, .. } => *food,
+            _ => 0,
+        }
+    }
+
+    pub fn has_food(&self) -> bool {
+        self.food() > 0
+    }
+
+    pub fn try_pickup_food(&mut self) -> Result<(), CellError> {
+        match self {
+            Cell::Wall => Err(CellError::Wall),
+
+            Cell::FreeCell {
+                food: ref mut food_ref,
+                ..
+            } => {
+                if *food_ref > 0 {
+                    *food_ref -= 1;
+                    Ok(())
+                } else {
+                    Err(CellError::NoFood)
+                }
+            }
+        }
+    }
+
+    pub fn try_drop_food(&mut self) -> Result<(), CellError> {
+        match self {
+            Cell::Wall => Err(CellError::Wall),
+
+            Cell::FreeCell {
+                food: ref mut food_ref,
+                ..
+            } => {
+                *food_ref += 1;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn free_to_move(&self) -> bool {
+        match self {
+            Cell::Wall => false,
+            Cell::FreeCell { ant_id, .. } => ant_id.is_none(),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Grid {
+pub struct Grid {
     cells: Vec<Vec<Cell>>,
     width: usize,
     height: usize,
@@ -144,7 +197,7 @@ impl Grid {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct World {
+pub struct World {
     ants: Vec<Ant>,
     swarms: HashMap<Color, Vec<AntId>>,
     grid: Grid,
@@ -155,6 +208,9 @@ pub enum WorldError {
     OutOfBounds,
     Wall,
     Occupied,
+    CellHasNoFood,
+    AntHasNoFood,
+    AntCarriesFood,
 }
 
 impl From<CellError> for WorldError {
@@ -162,6 +218,7 @@ impl From<CellError> for WorldError {
         match value {
             CellError::Wall => WorldError::Wall,
             CellError::Occupied => WorldError::Occupied,
+            CellError::NoFood => WorldError::CellHasNoFood,
         }
     }
 }
@@ -215,6 +272,18 @@ impl World {
         self.ants.iter().copied()
     }
 
+    pub fn cell_of(&self, id: AntId) -> &Cell {
+        self.grid.cell_at(self.ant(id).position).unwrap()
+    }
+
+    pub fn can_move(&self, id: AntId) -> bool {
+        let ant = self.ant(id);
+        let new_position = ant.position.translate(ant.direction);
+        self.grid
+            .cell_at(new_position)
+            .map_or(false, Cell::free_to_move)
+    }
+
     pub fn move_ant(&mut self, id: AntId) -> Result<(), WorldError> {
         let ant = self.ants.get_mut(id).unwrap();
         let new_position = ant.position.translate(ant.direction);
@@ -231,6 +300,51 @@ impl World {
 
     pub fn rotate_ant(&mut self, id: AntId, direction: Direction) {
         self.ant_mut(id).direction = direction;
+    }
+
+    pub fn can_pickup_food(&self, id: AntId) -> bool {
+        let ant = self.ant(id);
+        let cell = self.cell_of(id);
+        !ant.carries_food && cell.has_food()
+    }
+
+    pub fn pickup_food(&mut self, id: AntId) -> Result<(), WorldError> {
+        let ant = &mut self.ants[id];
+        let cell = self.grid.cell_at_mut(ant.position).unwrap();
+        if ant.carries_food {
+            return Err(WorldError::AntCarriesFood);
+        }
+        cell.try_pickup_food()?;
+        ant.carries_food = true;
+        Ok(())
+    }
+
+    pub fn can_drop_food(&self, id: AntId) -> bool {
+        let ant = self.ant(id);
+        ant.carries_food
+    }
+
+    pub fn drop_food(&mut self, id: AntId) -> Result<(), WorldError> {
+        let ant = &mut self.ants[id];
+        if !ant.carries_food {
+            return Err(WorldError::AntHasNoFood);
+        }
+        ant.carries_food = false;
+        let cell = self.grid.cell_at_mut(ant.position).unwrap();
+        cell.try_drop_food().unwrap();
+        Ok(())
+    }
+
+    pub fn apply(&mut self, id: AntId, action: Action) -> Result<(), WorldError> {
+        match action {
+            Action::Move => self.move_ant(id),
+            Action::Rotate { direction } => {
+                self.rotate_ant(id, direction);
+                Ok(())
+            }
+            Action::PickUpFood => self.pickup_food(id),
+            Action::DropFood => self.drop_food(id),
+        }
     }
 }
 
@@ -286,6 +400,25 @@ mod tests {
             assert_eq!(cell.ant(), Some(0));
             cell.clear_ant();
             assert_eq!(cell.ant(), None);
+        }
+
+        #[test]
+        fn pickup_food() {
+            let mut cell = Cell::default();
+            assert_eq!(cell.try_pickup_food(), Err(CellError::NoFood));
+            cell.try_drop_food().unwrap();
+            assert_eq!(cell.try_pickup_food(), Ok(()));
+            assert_eq!(cell.try_pickup_food(), Err(CellError::NoFood));
+        }
+
+        #[test]
+        fn has_food() {
+            let mut cell = Cell::default();
+            assert_eq!(cell.has_food(), false);
+            cell.try_drop_food().unwrap();
+            assert_eq!(cell.has_food(), true);
+            cell.try_pickup_food().unwrap();
+            assert_eq!(cell.has_food(), false);
         }
     }
 
@@ -426,6 +559,7 @@ mod tests {
             let ant = Ant::new(Color::Red, pos);
             let id = world.add_ant(ant).unwrap();
 
+            assert!(world.can_move(id));
             assert!(world.move_ant(id).is_ok());
             assert_eq!(world.grid().ant_at(pos), None);
             assert_eq!(world.grid().ant_at(new_pos), Some(id));
@@ -439,6 +573,7 @@ mod tests {
             let ant = Ant::new(Color::Red, Position { x: 9, y: 7 });
             let id = world.add_ant(ant).unwrap();
 
+            assert!(!world.can_move(id));
             assert_eq!(world.move_ant(id), Err(WorldError::OutOfBounds));
         }
 
@@ -454,7 +589,83 @@ mod tests {
             let id = world.add_ant(ant).unwrap();
             world.add_ant(another_ant).unwrap();
 
+            assert!(!world.can_move(id));
             assert_eq!(world.move_ant(id), Err(WorldError::Occupied));
+        }
+
+        #[test]
+        fn move_ant_into_wall() {
+            let mut grid = Grid::new(10, 15);
+            let pos = Position { x: 6, y: 7 };
+            let new_pos = pos.translate(Direction::default());
+            *grid.cell_at_mut(new_pos).unwrap() = Cell::Wall;
+
+            let ant = Ant::new(Color::Red, pos);
+            let mut world = World::new(grid);
+            let id = world.add_ant(ant).unwrap();
+
+            assert!(!world.can_move(id));
+            assert_eq!(world.move_ant(id), Err(WorldError::Wall));
+        }
+
+        #[test]
+        fn pickup_food() {
+            let mut grid = Grid::new(10, 15);
+            let pos = Position { x: 6, y: 7 };
+            *grid.cell_at_mut(pos).unwrap() = Cell::FreeCell {
+                ant_id: None,
+                food: 5,
+            };
+
+            let ant = Ant::new(Color::Red, pos);
+            let mut world = World::new(grid);
+            let id = world.add_ant(ant).unwrap();
+
+            assert!(world.can_pickup_food(id));
+            assert_eq!(world.pickup_food(id), Ok(()));
+            assert!(world.ant(id).carries_food);
+            assert_eq!(world.grid().cell_at(pos).unwrap().food(), 4);
+            assert!(!world.can_pickup_food(id));
+            assert_eq!(world.pickup_food(id), Err(WorldError::AntCarriesFood));
+        }
+
+        #[test]
+        fn pickup_food_from_empty_cell() {
+            let mut grid = Grid::new(10, 15);
+            let pos = Position { x: 6, y: 7 };
+            *grid.cell_at_mut(pos).unwrap() = Cell::FreeCell {
+                ant_id: None,
+                food: 0,
+            };
+
+            let ant = Ant::new(Color::Red, pos);
+            let mut world = World::new(grid);
+            let id = world.add_ant(ant).unwrap();
+
+            assert!(!world.can_pickup_food(id));
+            assert_eq!(world.pickup_food(id), Err(WorldError::CellHasNoFood));
+        }
+
+        #[test]
+        fn drop_food() {
+            let mut grid = Grid::new(10, 15);
+            let pos = Position { x: 6, y: 7 };
+            *grid.cell_at_mut(pos).unwrap() = Cell::FreeCell {
+                ant_id: None,
+                food: 5,
+            };
+
+            let ant = Ant::new(Color::Red, pos);
+            let mut world = World::new(grid);
+            let id = world.add_ant(ant).unwrap();
+            world.pickup_food(id).unwrap();
+
+            assert!(world.can_drop_food(id));
+            assert_eq!(world.drop_food(id), Ok(()));
+            assert!(!world.ant(id).carries_food);
+            assert_eq!(world.grid().cell_at(pos).unwrap().food(), 5);
+            assert!(!world.can_drop_food(id));
+            assert_eq!(world.drop_food(id), Err(WorldError::AntHasNoFood));
         }
     }
 }

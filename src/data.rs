@@ -83,3 +83,11 @@ pub enum Color {
     Black,
     Red,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    Move,
+    Rotate { direction: Direction },
+    DropFood,
+    PickUpFood,
+}
