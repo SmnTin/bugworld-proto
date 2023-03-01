@@ -45,8 +45,8 @@ pub enum Instr {
 }
 
 impl Instr {
-    pub fn eval(self, mut ant: AntMut) {
-        let next_instr = match self {
+    pub fn eval(self, ant: &mut AntMut) -> InstrIdx {
+        match self {
             Instr::Turn {
                 direction,
                 next_instr,
@@ -90,8 +90,7 @@ impl Instr {
                 let _ = ant.drop_food();
                 next_instr
             }
-        };
-        ant.update_instr_pointer(next_instr);
+        }
     }
 }
 

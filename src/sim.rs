@@ -7,9 +7,26 @@ pub trait Renderer {
     fn render(&mut self, world: &World);
 }
 
+struct Interpreter {
+    program: Program,
+    color: Color,
+}
+
+impl Interpreter {
+    fn step_brains(&mut self, world: &mut World) {
+        let ant_ids: Vec<_> = world.swarm_ids(self.color).collect();
+        for ant_id in ant_ids {
+            let mut ant = world.ant_mut(ant_id);
+            let instr = self.program[ant.instr_pointer()];
+            let next_instr = instr.eval(&mut ant);
+            ant.update_instr_pointer(next_instr)
+        }
+    }
+}
+
 pub struct Simulator {
     world: World,
-    programs: HashMap<Color, Program>,
+    interpreters: Vec<Interpreter>,
     renderer: Box<dyn Renderer>,
 }
 
@@ -19,28 +36,21 @@ impl Simulator {
         programs: HashMap<Color, Program>,
         renderer: Box<dyn Renderer>,
     ) -> Self {
+        let interpreters = programs
+            .into_iter()
+            .map(|(color, program)| Interpreter { program, color })
+            .collect();
         Self {
             world,
-            programs,
+            interpreters,
             renderer,
         }
     }
 
     pub fn step(&mut self) {
-        self.step_brains();
-        self.renderer.render(&self.world);
-    }
-
-    fn step_brains(&mut self) {
-        let ants = self.world.ant_ids();
-        for ant_id in ants {
-            self.step_single_brain(ant_id);
+        for interpreter in &mut self.interpreters {
+            interpreter.step_brains(&mut self.world);
         }
-    }
-
-    fn step_single_brain(&mut self, ant_id: AntId) {
-        let ant = self.world.ant_mut(ant_id);
-        let program = self.programs.get(&ant.color()).unwrap();
-        program[ant.instr_pointer()].eval(ant);
+        self.renderer.render(&self.world);
     }
 }
