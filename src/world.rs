@@ -1,18 +1,103 @@
-use crate::data::*;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ant {
-    pub color: Color,
-    pub direction: Direction,
-    pub position: Position,
-    pub instr_pointer: InstrIdx,
-    pub carries_food: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    #[default]
+    Right,
+    DownRight,
+    DownLeft,
+    Left,
+    UpLeft,
+    UpRight,
 }
 
-impl Ant {
-    pub fn new(color: Color, position: Position) -> Self {
-        Ant {
+impl Into<u32> for Direction {
+    fn into(self) -> u32 {
+        match self {
+            Direction::Right => 0,
+            Direction::DownRight => 1,
+            Direction::DownLeft => 2,
+            Direction::Left => 3,
+            Direction::UpLeft => 4,
+            Direction::UpRight => 5,
+        }
+    }
+}
+
+impl TryFrom<u32> for Direction {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, ()> {
+        match value {
+            0 => Ok(Direction::Right),
+            1 => Ok(Direction::DownRight),
+            2 => Ok(Direction::DownLeft),
+            3 => Ok(Direction::Left),
+            4 => Ok(Direction::UpLeft),
+            5 => Ok(Direction::UpRight),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Position {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Position {
+    pub fn translate(&self, direction: Direction) -> Self {
+        match direction {
+            Direction::Right => Position {
+                x: self.x + 1,
+                y: self.y,
+            },
+            Direction::DownRight => Position {
+                x: self.x,
+                y: self.y + 1,
+            },
+            Direction::DownLeft => Position {
+                x: self.x - 1,
+                y: self.y + 1,
+            },
+            Direction::Left => Position {
+                x: self.x - 1,
+                y: self.y,
+            },
+            Direction::UpLeft => Position {
+                x: self.x,
+                y: self.y - 1,
+            },
+            Direction::UpRight => Position {
+                x: self.x + 1,
+                y: self.y - 1,
+            },
+        }
+    }
+}
+
+pub type AntId = usize;
+pub type InstrIdx = usize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Color {
+    Black,
+    Red,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AntData {
+    color: Color,
+    direction: Direction,
+    position: Position,
+    instr_pointer: InstrIdx,
+    carries_food: bool,
+}
+
+impl AntData {
+    fn new(color: Color, position: Position) -> Self {
+        AntData {
             color,
             position,
             direction: Direction::default(),
@@ -198,7 +283,7 @@ impl Grid {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct World {
-    ants: Vec<Ant>,
+    ants: Vec<AntData>,
     swarms: HashMap<Color, Vec<AntId>>,
     grid: Grid,
 }
@@ -223,6 +308,129 @@ impl From<CellError> for WorldError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Ant<'a> {
+    id: AntId,
+
+    data: &'a AntData,
+}
+
+impl Ant<'_> {
+    pub fn id(&self) -> AntId {
+        self.id
+    }
+
+    pub fn position(&self) -> Position {
+        self.data.position
+    }
+
+    pub fn direction(&self) -> Direction {
+        self.data.direction
+    }
+
+    pub fn color(&self) -> Color {
+        self.data.color
+    }
+
+    pub fn carries_food(&self) -> bool {
+        self.data.carries_food
+    }
+
+    pub fn instr_pointer(&self) -> usize {
+        self.data.instr_pointer
+    }
+}
+
+impl PartialEq for Ant<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Ant<'_> {}
+
+pub struct AntMut<'a> {
+    id: AntId,
+
+    grid: &'a mut Grid,
+    data: &'a mut AntData,
+}
+
+impl<'a> AntMut<'a> {
+    pub fn id(&self) -> AntId {
+        self.id
+    }
+
+    pub fn position(&self) -> Position {
+        self.data.position
+    }
+
+    pub fn direction(&self) -> Direction {
+        self.data.direction
+    }
+
+    pub fn color(&self) -> Color {
+        self.data.color
+    }
+
+    pub fn carries_food(&self) -> bool {
+        self.data.carries_food
+    }
+
+    pub fn instr_pointer(&self) -> usize {
+        self.data.instr_pointer
+    }
+
+    pub fn move_forward(&mut self) -> Result<(), WorldError> {
+        let new_position = self.data.position.translate(self.data.direction);
+        let new_cell = self
+            .grid
+            .cell_at_mut(new_position)
+            .ok_or(WorldError::OutOfBounds)?;
+        new_cell.try_put_ant(self.id)?;
+        let old_cell = self.grid.cell_at_mut(self.data.position).unwrap();
+        old_cell.clear_ant();
+        self.data.position = new_position;
+        Ok(())
+    }
+
+    pub fn rotate(&mut self, direction: Direction) {
+        self.data.direction = direction;
+    }
+
+    pub fn pickup_food(&mut self) -> Result<(), WorldError> {
+        let cell = self.grid.cell_at_mut(self.data.position).unwrap();
+        if self.data.carries_food {
+            return Err(WorldError::AntCarriesFood);
+        }
+        cell.try_pickup_food()?;
+        self.data.carries_food = true;
+        Ok(())
+    }
+
+    pub fn drop_food(&mut self) -> Result<(), WorldError> {
+        if !self.data.carries_food {
+            return Err(WorldError::AntHasNoFood);
+        }
+        self.data.carries_food = false;
+        let cell = self.grid.cell_at_mut(self.data.position).unwrap();
+        cell.try_drop_food().unwrap();
+        Ok(())
+    }
+
+    pub fn update_instr_pointer(&mut self, new_pointer: usize) {
+        self.data.instr_pointer = new_pointer;
+    }
+}
+
+impl PartialEq for AntMut<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for AntMut<'_> {}
+
 impl World {
     pub fn new(grid: Grid) -> Self {
         let mut swarms = HashMap::new();
@@ -240,7 +448,11 @@ impl World {
         &self.grid
     }
 
-    pub fn swarm(&self, color: Color) -> impl Iterator<Item = AntId> + '_ {
+    pub fn swarm(&self, color: Color) -> impl Iterator<Item = Ant<'_>> {
+        self.swarm_ids(color).map(|id| self.ant(id))
+    }
+
+    pub fn swarm_ids(&self, color: Color) -> impl Iterator<Item = AntId> + '_ {
         self.swarms.get(&color).unwrap().iter().copied()
     }
 
@@ -248,103 +460,43 @@ impl World {
         self.swarms.get_mut(&color).unwrap()
     }
 
-    pub fn add_ant(&mut self, ant: Ant) -> Result<AntId, WorldError> {
+    pub fn add_ant(&mut self, color: Color, position: Position) -> Result<AntId, WorldError> {
         let id = self.ants.len();
         let cell = self
             .grid
-            .cell_at_mut(ant.position)
+            .cell_at_mut(position)
             .ok_or(WorldError::OutOfBounds)?;
         cell.try_put_ant(id)?;
-        self.ants.push(ant);
-        self.swarm_mut(ant.color).push(id);
+        self.ants.push(AntData::new(color, position));
+        self.swarm_mut(color).push(id);
         Ok(id)
     }
 
-    pub fn ant(&self, id: AntId) -> Ant {
-        self.ants[id]
+    pub fn ant(&self, id: AntId) -> Ant<'_> {
+        Ant {
+            id,
+            data: &self.ants[id],
+        }
     }
 
-    fn ant_mut(&mut self, id: AntId) -> &mut Ant {
-        &mut self.ants[id]
+    pub fn ant_mut(&mut self, id: AntId) -> AntMut<'_> {
+        AntMut {
+            id,
+            grid: &mut self.grid,
+            data: &mut self.ants[id],
+        }
     }
 
-    pub fn ants(&self) -> impl Iterator<Item = Ant> + '_ {
-        self.ants.iter().copied()
+    pub fn ants(&self) -> impl Iterator<Item = Ant<'_>> {
+        (0..self.ants.len()).map(|id| self.ant(id))
+    }
+
+    pub fn ant_ids(&self) -> impl Iterator<Item = AntId> {
+        0..self.ants.len()
     }
 
     pub fn cell_of(&self, id: AntId) -> &Cell {
-        self.grid.cell_at(self.ant(id).position).unwrap()
-    }
-
-    pub fn can_move(&self, id: AntId) -> bool {
-        let ant = self.ant(id);
-        let new_position = ant.position.translate(ant.direction);
-        self.grid
-            .cell_at(new_position)
-            .map_or(false, Cell::free_to_move)
-    }
-
-    pub fn move_ant(&mut self, id: AntId) -> Result<(), WorldError> {
-        let ant = self.ants.get_mut(id).unwrap();
-        let new_position = ant.position.translate(ant.direction);
-        let new_cell = self
-            .grid
-            .cell_at_mut(new_position)
-            .ok_or(WorldError::OutOfBounds)?;
-        new_cell.try_put_ant(id)?;
-        let old_cell = self.grid.cell_at_mut(ant.position).unwrap();
-        old_cell.clear_ant();
-        ant.position = new_position;
-        Ok(())
-    }
-
-    pub fn rotate_ant(&mut self, id: AntId, direction: Direction) {
-        self.ant_mut(id).direction = direction;
-    }
-
-    pub fn can_pickup_food(&self, id: AntId) -> bool {
-        let ant = self.ant(id);
-        let cell = self.cell_of(id);
-        !ant.carries_food && cell.has_food()
-    }
-
-    pub fn pickup_food(&mut self, id: AntId) -> Result<(), WorldError> {
-        let ant = &mut self.ants[id];
-        let cell = self.grid.cell_at_mut(ant.position).unwrap();
-        if ant.carries_food {
-            return Err(WorldError::AntCarriesFood);
-        }
-        cell.try_pickup_food()?;
-        ant.carries_food = true;
-        Ok(())
-    }
-
-    pub fn can_drop_food(&self, id: AntId) -> bool {
-        let ant = self.ant(id);
-        ant.carries_food
-    }
-
-    pub fn drop_food(&mut self, id: AntId) -> Result<(), WorldError> {
-        let ant = &mut self.ants[id];
-        if !ant.carries_food {
-            return Err(WorldError::AntHasNoFood);
-        }
-        ant.carries_food = false;
-        let cell = self.grid.cell_at_mut(ant.position).unwrap();
-        cell.try_drop_food().unwrap();
-        Ok(())
-    }
-
-    pub fn apply(&mut self, id: AntId, action: Action) -> Result<(), WorldError> {
-        match action {
-            Action::Move => self.move_ant(id),
-            Action::Rotate { direction } => {
-                self.rotate_ant(id, direction);
-                Ok(())
-            }
-            Action::PickUpFood => self.pickup_food(id),
-            Action::DropFood => self.drop_food(id),
-        }
+        self.grid.cell_at(self.ant(id).position()).unwrap()
     }
 }
 
@@ -505,14 +657,13 @@ mod tests {
             let mut world = World::new(Grid::new(10, 15));
 
             let pos = Position { x: 5, y: 5 };
-            let ant = Ant::new(Color::Red, pos);
 
-            let add_result = world.add_ant(ant);
+            let add_result = world.add_ant(Color::Red, pos);
             assert!(add_result.is_ok());
             let id = add_result.unwrap();
 
-            assert_eq!(world.ant(id), ant);
-            assert_eq!(world.swarm(Color::Red).next(), Some(id));
+            assert_eq!(world.ant(id).id(), id);
+            assert_eq!(world.swarm(Color::Red).next().map(|ant| ant.id()), Some(id));
             assert_eq!(world.swarm(Color::Black).next(), None);
             assert_eq!(world.grid().ant_at(pos), Some(id));
         }
@@ -523,9 +674,11 @@ mod tests {
             let mut grid = Grid::new(10, 15);
             *grid.cell_at_mut(blocked_pos).unwrap() = Cell::Wall;
 
-            let ant = Ant::new(Color::Red, blocked_pos);
             let mut world = World::new(grid);
-            assert_eq!(world.add_ant(ant), Err(WorldError::Wall));
+            assert_eq!(
+                world.add_ant(Color::Red, blocked_pos),
+                Err(WorldError::Wall)
+            );
         }
 
         #[test]
@@ -533,20 +686,18 @@ mod tests {
             let mut world = World::new(Grid::new(10, 15));
 
             let pos = Position { x: 6, y: 7 };
-            let ant = Ant::new(Color::Red, pos);
-            assert!(world.add_ant(ant).is_ok());
-            assert_eq!(world.add_ant(ant), Err(WorldError::Occupied));
+            assert!(world.add_ant(Color::Red, pos).is_ok());
+            assert_eq!(world.add_ant(Color::Red, pos), Err(WorldError::Occupied));
         }
 
         #[test]
         fn rotate_ant() {
             let mut world = World::new(Grid::new(10, 15));
 
-            let ant = Ant::new(Color::Red, Position { x: 6, y: 7 });
-            let id = world.add_ant(ant).unwrap();
-            world.rotate_ant(id, Direction::DownRight);
+            let id = world.add_ant(Color::Red, Position { x: 6, y: 7 }).unwrap();
+            world.ant_mut(id).rotate(Direction::DownRight);
 
-            assert_eq!(world.ant(id).direction, Direction::DownRight);
+            assert_eq!(world.ant(id).direction(), Direction::DownRight);
         }
 
         #[test]
@@ -556,25 +707,24 @@ mod tests {
             let pos = Position { x: 6, y: 7 };
             let new_pos = pos.translate(Direction::default());
 
-            let ant = Ant::new(Color::Red, pos);
-            let id = world.add_ant(ant).unwrap();
+            let id = world.add_ant(Color::Red, pos).unwrap();
 
-            assert!(world.can_move(id));
-            assert!(world.move_ant(id).is_ok());
+            assert!(world.ant_mut(id).move_forward().is_ok());
             assert_eq!(world.grid().ant_at(pos), None);
             assert_eq!(world.grid().ant_at(new_pos), Some(id));
-            assert_eq!(world.ant(id).position, new_pos);
+            assert_eq!(world.ant(id).position(), new_pos);
         }
 
         #[test]
         fn move_ant_out_of_bounds() {
             let mut world = World::new(Grid::new(10, 15));
 
-            let ant = Ant::new(Color::Red, Position { x: 9, y: 7 });
-            let id = world.add_ant(ant).unwrap();
+            let id = world.add_ant(Color::Red, Position { x: 9, y: 7 }).unwrap();
 
-            assert!(!world.can_move(id));
-            assert_eq!(world.move_ant(id), Err(WorldError::OutOfBounds));
+            assert_eq!(
+                world.ant_mut(id).move_forward(),
+                Err(WorldError::OutOfBounds)
+            );
         }
 
         #[test]
@@ -584,13 +734,10 @@ mod tests {
             let pos = Position { x: 6, y: 7 };
             let new_pos = pos.translate(Direction::default());
 
-            let ant = Ant::new(Color::Red, pos);
-            let another_ant = Ant::new(Color::Red, new_pos);
-            let id = world.add_ant(ant).unwrap();
-            world.add_ant(another_ant).unwrap();
+            let id = world.add_ant(Color::Red, pos).unwrap();
+            world.add_ant(Color::Red, new_pos).unwrap();
 
-            assert!(!world.can_move(id));
-            assert_eq!(world.move_ant(id), Err(WorldError::Occupied));
+            assert_eq!(world.ant_mut(id).move_forward(), Err(WorldError::Occupied));
         }
 
         #[test]
@@ -600,12 +747,10 @@ mod tests {
             let new_pos = pos.translate(Direction::default());
             *grid.cell_at_mut(new_pos).unwrap() = Cell::Wall;
 
-            let ant = Ant::new(Color::Red, pos);
             let mut world = World::new(grid);
-            let id = world.add_ant(ant).unwrap();
+            let id = world.add_ant(Color::Red, pos).unwrap();
 
-            assert!(!world.can_move(id));
-            assert_eq!(world.move_ant(id), Err(WorldError::Wall));
+            assert_eq!(world.ant_mut(id).move_forward(), Err(WorldError::Wall));
         }
 
         #[test]
@@ -617,16 +762,16 @@ mod tests {
                 food: 5,
             };
 
-            let ant = Ant::new(Color::Red, pos);
             let mut world = World::new(grid);
-            let id = world.add_ant(ant).unwrap();
+            let id = world.add_ant(Color::Red, pos).unwrap();
 
-            assert!(world.can_pickup_food(id));
-            assert_eq!(world.pickup_food(id), Ok(()));
-            assert!(world.ant(id).carries_food);
+            assert_eq!(world.ant_mut(id).pickup_food(), Ok(()));
+            assert!(world.ant(id).carries_food());
             assert_eq!(world.grid().cell_at(pos).unwrap().food(), 4);
-            assert!(!world.can_pickup_food(id));
-            assert_eq!(world.pickup_food(id), Err(WorldError::AntCarriesFood));
+            assert_eq!(
+                world.ant_mut(id).pickup_food(),
+                Err(WorldError::AntCarriesFood)
+            );
         }
 
         #[test]
@@ -638,12 +783,13 @@ mod tests {
                 food: 0,
             };
 
-            let ant = Ant::new(Color::Red, pos);
             let mut world = World::new(grid);
-            let id = world.add_ant(ant).unwrap();
+            let id = world.add_ant(Color::Red, pos).unwrap();
 
-            assert!(!world.can_pickup_food(id));
-            assert_eq!(world.pickup_food(id), Err(WorldError::CellHasNoFood));
+            assert_eq!(
+                world.ant_mut(id).pickup_food(),
+                Err(WorldError::CellHasNoFood)
+            );
         }
 
         #[test]
@@ -655,17 +801,14 @@ mod tests {
                 food: 5,
             };
 
-            let ant = Ant::new(Color::Red, pos);
             let mut world = World::new(grid);
-            let id = world.add_ant(ant).unwrap();
-            world.pickup_food(id).unwrap();
+            let id = world.add_ant(Color::Red, pos).unwrap();
+            world.ant_mut(id).pickup_food().unwrap();
 
-            assert!(world.can_drop_food(id));
-            assert_eq!(world.drop_food(id), Ok(()));
-            assert!(!world.ant(id).carries_food);
+            assert_eq!(world.ant_mut(id).drop_food(), Ok(()));
+            assert!(!world.ant(id).carries_food());
             assert_eq!(world.grid().cell_at(pos).unwrap().food(), 5);
-            assert!(!world.can_drop_food(id));
-            assert_eq!(world.drop_food(id), Err(WorldError::AntHasNoFood));
+            assert_eq!(world.ant_mut(id).drop_food(), Err(WorldError::AntHasNoFood));
         }
     }
 }

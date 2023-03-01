@@ -1,4 +1,3 @@
-use crate::data::*;
 use crate::world::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,25 +45,24 @@ pub enum Instr {
 }
 
 impl Instr {
-    pub fn eval(self, world: &World, ant_id: AntId) -> (Option<Action>, InstrIdx) {
-        match self {
+    pub fn eval(self, mut ant: AntMut) {
+        let next_instr = match self {
             Instr::Turn {
                 direction,
                 next_instr,
             } => {
-                let action = Action::Rotate {
-                    direction: direction.apply_to(world.ant(ant_id).direction),
-                };
-                (Some(action), next_instr)
+                let new_direction = direction.apply_to(ant.direction());
+                ant.rotate(new_direction);
+                next_instr
             }
             Instr::Move {
                 success_instr,
                 fail_instr,
             } => {
-                if world.can_move(ant_id) {
-                    (Some(Action::Move), success_instr)
+                if ant.move_forward().is_ok() {
+                    success_instr
                 } else {
-                    (None, fail_instr)
+                    fail_instr
                 }
             }
             Instr::Direction {
@@ -72,31 +70,29 @@ impl Instr {
                 success_instr,
                 fail_instr,
             } => {
-                let ant = world.ant(ant_id);
-                let next_instr = if ant.direction == direction {
+                if ant.direction() == direction {
                     success_instr
                 } else {
                     fail_instr
-                };
-                (None, next_instr)
+                }
             }
             Instr::PickUpFood {
                 success_instr,
                 fail_instr,
             } => {
-                if world.can_pickup_food(ant_id) {
-                    (Some(Action::PickUpFood), success_instr)
+                if ant.pickup_food().is_ok() {
+                    success_instr
                 } else {
-                    (None, fail_instr)
+                    fail_instr
                 }
             }
             Instr::DropFood { next_instr } => {
-                if world.can_drop_food(ant_id) {
-                    (Some(Action::DropFood), next_instr)
-                } else {
-                    (None, next_instr)
-                }
+                let _ = ant.drop_food();
+                next_instr
             }
-        }
+        };
+        ant.update_instr_pointer(next_instr);
     }
 }
+
+pub type Program = Vec<Instr>;
